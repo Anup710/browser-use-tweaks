@@ -123,14 +123,71 @@ The *durable* shape of the site — the map, not the diary. Focus on what the ne
 - **Run narration** or step-by-step of the specific task you just did.
 - **Secrets, cookies, session tokens, user-specific state.** `domain-skills/` is shared and public.
 
+## Performance: batch actions, minimize screenshots
+
+The harness is fast. The bottleneck is the agent loop — every tool call round-trip costs 15-35s (LLM inference + shell spawn + image read). **Minimize round-trips.**
+
+### Batch mechanical actions into one script
+
+Don't do one action per `browser-harness` call. Combine predictable sequences:
+
+```bash
+browser-harness <<'PY'
+# BAD: one action per call (5 round-trips, ~2 minutes)
+# GOOD: batch into one call (~15 seconds)
+click(215, 340)           # click name field
+type_text("John Doe")
+press_key("Tab")          # move to email field
+type_text("john@example.com")
+press_key("Tab")          # move to message field
+type_text("Hello world")
+screenshot()              # ONE screenshot at the end to verify
+print(page_info())
+PY
+```
+
+### Screenshot discipline
+
+Screenshots are expensive — each one adds ~1.5K tokens to context and requires a Read tool call + LLM image analysis. Rules:
+
+1. **Screenshot BEFORE** a sequence to plan your actions (find coordinates, understand layout).
+2. **Batch mechanical actions** (type, tab, click known coordinates) WITHOUT intermediate screenshots.
+3. **Screenshot AFTER** the batch to verify the result.
+4. **Never re-read old screenshots** — only the most recent one matters.
+5. **Prefer text verification** when the answer is in URL, title, or element state:
+   - `page_info()` for URL/title/viewport changes
+   - `js("document.querySelector('#status').textContent")` for element text
+   - `state_summary()` for a full text-based page snapshot
+   - `dom_state({"btn": "#submit", "name": "#name"})` for targeted element checks
+   - `verify("form filled", {"name": "#name", "email": "#email"})` for structured verification with conditional screenshot
+
+### Speculative execution
+
+Combine action + verification in one script. Screenshot only on failure:
+
+```bash
+browser-harness <<'PY'
+click(submit_x, submit_y)
+wait(2)
+info = page_info()
+if "success" in info.get("url", "") or "thank" in info.get("title", "").lower():
+    print("SUCCESS:", info["url"])
+else:
+    screenshot()
+    print("NEEDS_REVIEW: unexpected state at", info["url"])
+PY
+```
+
+Happy path = zero images added to context.
+
 ## What actually works
 
-- **Screenshots first**: use `screenshot()` to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation.
-- **Clicking**: `screenshot()` → look → `click(x, y)` → `screenshot()` again to verify the result. Coordinate clicks pass through iframes/shadow/cross-origin at the compositor level.
+- **Screenshots to plan**: use `screenshot()` to understand the current page, find visible targets, and decide your action sequence — then batch the actions.
+- **Clicking**: `screenshot()` → look → plan multiple clicks/types → execute as batch → `screenshot()` to verify. Coordinate clicks pass through iframes/shadow/cross-origin at the compositor level.
 - **Bulk HTTP**: `http_get(url)` + `ThreadPoolExecutor`. No browser for static pages (249 Netflix pages in 2.8s).
 - **After goto**: `wait_for_load()`.
 - **Wrong/stale tab**: `ensure_real_tab()`. Use it when the current tab is stale or internal; the daemon also auto-recovers from stale sessions on the next call.
-- **Verification**: `print(page_info())` is the simplest "is this alive?" check, but screenshots are the default way to verify whether a visible action actually worked.
+- **Text verification first**: `page_info()`, `state_summary()`, `dom_state()`, `verify()` are cheaper than screenshots for checking outcomes. Use screenshots only when you need to see visual layout.
 - **DOM reads**: use `js(...)` for inspection and extraction when the screenshot shows that coordinates are the wrong tool.
 - **Iframe sites** (Azure blades, Salesforce): `click(x, y)` passes through; only drop to iframe DOM work when coordinate clicks are the wrong tool.
 - **Auth wall**: redirected to login → stop and ask the user. Don't type credentials from screenshots.
@@ -180,8 +237,8 @@ Chrome / Browser Use cloud -> CDP WS -> daemon.py -> /tmp/bu-<NAME>.sock -> run.
 - **Browser Use API is camelCase on the wire.** `cdpUrl`, `proxyCountryCode`, etc.
 - **Remote `cdpUrl` is HTTPS, not ws.** Resolve the websocket URL via `/json/version`.
 - **Stop cloud browsers with `PATCH /browsers/{id}` + `{\"action\":\"stop\"}`.**
-- **After every meaningful action, re-screenshot before assuming it worked.** Use the image to verify changed state, open menus, navigation, visible errors, and whether the page is in the state you expected.
-- **Use screenshots to drive exploration.** They are often the fastest way to find the next click target, notice hidden blockers, and decide if a selector is even worth writing.
+- **Verify after batches, not after every action.** Use `page_info()`, `state_summary()`, or `verify()` for text-based checks. Screenshot only when you need to see visual layout or when text verification shows an unexpected state.
+- **Use screenshots to drive exploration and planning.** They are the fastest way to find click targets and notice blockers — but take one screenshot to plan a batch of actions, not one per action.
 - **Prefer compositor-level actions over framework hacks.** Try screenshots, coordinate clicks, and raw key input before adding DOM-specific workarounds.
 - **If you need framework-specific DOM tricks, check `interaction-skills/` first.** That is where dropdown, dialog, iframe, shadow DOM, and form-specific guidance belongs.
 

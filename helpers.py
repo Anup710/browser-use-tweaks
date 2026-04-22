@@ -205,6 +205,62 @@ def upload_file(selector, path):
     if not nid: raise RuntimeError(f"no element for {selector}")
     cdp("DOM.setFileInputFiles", files=[path] if isinstance(path, str) else list(path), nodeId=nid)
 
+def state_summary(text_limit=2000):
+    """Text-based page snapshot (~500 tokens vs ~1.5K for a screenshot image).
+    Use for verification when the check is URL/title/form state, not visual layout."""
+    info = page_info()
+    if "dialog" in info:
+        return f"DIALOG: {json.dumps(info['dialog'])}"
+    text = js(f"document.body.innerText.substring(0, {text_limit})")
+    forms = js(
+        "JSON.stringify(Array.from(document.querySelectorAll('form')).map(f=>({action:f.action,method:f.method,"
+        "fields:Array.from(f.elements).filter(e=>e.tagName!=='FIELDSET').map(e=>({type:e.type,name:e.name,"
+        "value:(e.value||'').substring(0,100),visible:e.offsetParent!==null}))})))"
+    )
+    return (
+        f"URL: {info.get('url')}  Title: {info.get('title')}  "
+        f"Viewport: {info.get('w')}x{info.get('h')}  "
+        f"Scroll: ({info.get('sx')},{info.get('sy')}) of ({info.get('pw')}x{info.get('ph')})\n"
+        f"Forms: {forms}\n"
+        f"Text: {text}"
+    )
+
+
+def dom_state(checks):
+    """Targeted element state extraction.
+    checks: {name: selector} → {name: {exists, visible, text, value}}"""
+    parts = []
+    for k, v in checks.items():
+        parts.append(
+            f"{json.dumps(k)}:(()=>{{const e=document.querySelector({json.dumps(v)});"
+            f"return e?{{exists:true,visible:e.offsetParent!==null,"
+            f"text:(e.textContent||'').substring(0,200),"
+            f"value:(e.value||'').substring(0,200)}}:{{exists:false}}}})()"
+        )
+    js_code = "JSON.stringify({" + ",".join(parts) + "})"
+    return json.loads(js("(" + js_code + ")") or "{}")
+
+
+def verify(description, checks=None):
+    """Structured verification. Takes screenshot only if checks fail or aren't provided.
+    checks: {name: selector} dict — if all exist, prints OK without a screenshot."""
+    info = page_info()
+    result = {"step": description, "url": info.get("url"), "title": info.get("title")}
+    if checks:
+        state = dom_state(checks)
+        result["checks"] = state
+        all_ok = all(v.get("exists") for v in state.values())
+        result["status"] = "OK" if all_ok else "NEEDS_REVIEW"
+        if not all_ok:
+            screenshot()
+            result["screenshot"] = "/tmp/shot.png"
+    else:
+        screenshot()
+        result["screenshot"] = "/tmp/shot.png"
+    print(json.dumps(result, indent=2))
+    return result
+
+
 def http_get(url, headers=None, timeout=20.0):
     """Pure HTTP — no browser. Use for static pages / APIs. Wrap in ThreadPoolExecutor for bulk."""
     import urllib.request, gzip

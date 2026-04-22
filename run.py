@@ -1,4 +1,10 @@
 import sys
+from pathlib import Path
+
+# Make domain-skills importable so pre-compiled action modules can be used
+_domain_skills = Path(__file__).parent / "domain-skills"
+if _domain_skills.is_dir() and str(_domain_skills) not in sys.path:
+    sys.path.insert(0, str(_domain_skills))
 
 from admin import (
     ensure_daemon,
