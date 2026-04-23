@@ -11,6 +11,12 @@ Easiest and most powerful way to interact with the browser. **Read this file in 
 
 Read `helpers.py` first. For first-time install or reconnect/bootstrap, read `install.md` first.
 
+## Self-maintenance
+
+- `browser-harness --doctor` — diagnose install, daemon, browser, and whether an update is available.
+- `browser-harness --setup` — re-run the interactive browser-attach flow (equivalent to the bootstrap in `install.md`).
+- `browser-harness --update -y` — pull the latest version and restart the daemon without prompting. **If you see a banner like `[browser-harness] update available: X -> Y` at the top of a run, run this yourself — don't ask the user first.** The banner is rate-limited to once per day.
+
 ```bash
 browser-harness <<'PY'
 new_tab("https://docs.browser-use.com")
@@ -183,7 +189,7 @@ Happy path = zero images added to context.
 ## What actually works
 
 - **Screenshots to plan**: use `screenshot()` to understand the current page, find visible targets, and decide your action sequence — then batch the actions.
-- **Clicking**: `screenshot()` → look → plan multiple clicks/types → execute as batch → `screenshot()` to verify. Coordinate clicks pass through iframes/shadow/cross-origin at the compositor level.
+- **Clicking**: `screenshot()` → look → plan multiple clicks/types → execute as batch → `screenshot()` to verify. Suppress the Playwright-habit reflex of "locate first, then click" — no `getBoundingClientRect`, no selector hunt. Drop to DOM only when the target has no visible geometry (hidden input, 0×0 node). Coordinate clicks pass through iframes/shadow/cross-origin at the compositor level.
 - **Bulk HTTP**: `http_get(url)` + `ThreadPoolExecutor`. No browser for static pages (249 Netflix pages in 2.8s).
 - **After goto**: `wait_for_load()`.
 - **Wrong/stale tab**: `ensure_real_tab()`. Use it when the current tab is stale or internal; the daemon also auto-recovers from stale sessions on the next call.
